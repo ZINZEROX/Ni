@@ -1,0 +1,1289 @@
+--[[
+    ════════════════════════════════════════════════════════════════════════
+    YIN YANG — SUPER RING v3
+    ════════════════════════════════════════════════════════════════════════
+    20 estilos de movimiento | Selector de jugador | Control de potencia
+    Fly Car (vuelo de vehículos/modelos grandes) | GUI rediseñada
+    Convención: registra _G["_YY_STOP_SuperRing"] al final.
+
+    CAMBIOS v3:
+    • GUI reconstruida con el lenguaje visual de la librería Yin Yang
+      (panel glassy, degradado animado, borde con sweep) — ya no es el
+      panel plano gris de v2. Título ahora dice "YIN YANG".
+    • FIX: el selector de jugadores buscaba/ordenaba por username
+      (p.Name), no por el apodo que la gente realmente usa (p.DisplayName).
+      Ahora usa DisplayName en el texto Y en el orden alfabético.
+    • NUEVO: Fly Car — agarra un vehículo (si estás sentado en un Seat/
+      VehicleSeat) o cualquier modelo grande al que apuntes, y lo vuela
+      como una sola unidad rígida, sin importar cuántas piezas tenga ni
+      qué tipo de unión use (Weld, Motor6D, HingeConstraint, etc.).
+      Ver la explicación técnica completa antes de startFlyCar().
+    ════════════════════════════════════════════════════════════════════════
+]]
+
+local RS      = game:GetService("RunService")
+local Players = game:GetService("Players")
+local UIS     = game:GetService("UserInputService")
+local TS      = game:GetService("TweenService")
+local lp      = Players.LocalPlayer
+local pg      = lp:WaitForChild("PlayerGui")
+
+-- Cleanup previa
+if _G["_YY_STOP_SuperRing"] then _G["_YY_STOP_SuperRing"]() end
+local prevGui = pg:FindFirstChild("_SuperRing")
+if prevGui then prevGui:Destroy() end
+
+-- ── Config ajustable desde la GUI (Ring) ─────────────────────────────────
+local CFG = {
+    maxParts   = 80,    -- máximo de partes a manejar
+    radius     = 12,    -- radio base del estilo
+    height     = 5,     -- amplitud vertical
+    speed      = 1.5,   -- velocidad angular (factor)
+    force      = 1100,  -- velocidad máxima de empuje (studs/s)
+}
+
+local FORCE_MIN, FORCE_MAX, FORCE_STEP = 300, 2400, 150
+
+-- ── Config de Fly Car ─────────────────────────────────────────────────────
+local FLYCFG = {
+    moveSpeed = 90,    -- studs/s, adelante/atrás
+    turnSpeed = 1.6,   -- rad/s, giro (A/D)
+    vertSpeed = 60,    -- studs/s, subir/bajar (Space/Shift)
+    maxParts  = 400,   -- tope de piezas por vehículo (evita colgar el juego)
+}
+
+-- ── Estado (Ring) ─────────────────────────────────────────────────────────
+local active       = false
+local t             = 0
+local styleIdx      = 1
+local targetPlayer  = lp
+local managedParts  = {}
+local heartbeatCon  = nil
+local topUpCon       = nil
+local topUpBusy      = false
+
+-- ── Estado (Fly Car) ──────────────────────────────────────────────────────
+local flyActive        = false
+local flyModel         = nil
+local flyPrimary       = nil
+local flyOffsets       = {}   -- [part] = CFrame relativo a flyPrimary
+local flyOriginal      = {}   -- [part] = {Anchored=bool, CanCollide=bool}
+local flyCFrame        = CFrame.new()
+local flyHeartbeatCon  = nil
+local flyKeys          = { W=false, A=false, S=false, D=false, Up=false, Down=false }
+
+-- ── ESTILOS ───────────────────────────────────────────────────────────────
+-- Cada fn(i, n, t, c) → Vector3 target
+-- i = índice 1-based, n = total partes, t = tiempo, c = Vector3 centro
+local STYLES = {
+    {
+        name = "Tornado",
+        fn = function(i, n, t, c)
+            local a = (i/n) * math.pi*2 + t * CFG.speed
+            local y = math.sin(t*3 + i*0.8) * CFG.height
+            return Vector3.new(c.X + math.cos(a)*CFG.radius, c.Y + y + 3, c.Z + math.sin(a)*CFG.radius)
+        end
+    },
+    {
+        name = "Orbit",
+        fn = function(i, n, t, c)
+            local a = (i/n) * math.pi*2 + t * CFG.speed
+            return Vector3.new(c.X + math.cos(a)*CFG.radius, c.Y + 3, c.Z + math.sin(a)*CFG.radius)
+        end
+    },
+    {
+        name = "DNA Helix",
+        fn = function(i, n, t, c)
+            local strand = (i%2 == 0) and 0 or math.pi
+            local prog   = (i/n) * math.pi * 4
+            local a      = prog + t * CFG.speed + strand
+            local yOff   = ((i/n) * CFG.height*3 - CFG.height*1.5) + math.sin(t*2)*0.5
+            return Vector3.new(c.X + math.cos(a)*CFG.radius, c.Y + yOff, c.Z + math.sin(a)*CFG.radius)
+        end
+    },
+    {
+        name = "Sphere",
+        fn = function(i, n, t, c)
+            local golden = (1 + math.sqrt(5)) / 2
+            local theta  = math.acos(1 - 2*i/n)
+            local phi    = math.pi*2 * i / golden + t * CFG.speed
+            local r      = CFG.radius
+            return Vector3.new(
+                c.X + r * math.sin(theta) * math.cos(phi),
+                c.Y + r * math.cos(theta),
+                c.Z + r * math.sin(theta) * math.sin(phi)
+            )
+        end
+    },
+    {
+        name = "Vortex",
+        fn = function(i, n, t, c)
+            local frac = i/n
+            local a    = frac * math.pi*4 + t * CFG.speed * 1.5
+            local r    = CFG.radius * (0.15 + frac * 0.85)
+            local yOff = (frac - 0.5) * CFG.height * 3
+            return Vector3.new(c.X + math.cos(a)*r, c.Y + yOff, c.Z + math.sin(a)*r)
+        end
+    },
+    {
+        name = "Wave",
+        fn = function(i, n, t, c)
+            local a    = (i/n) * math.pi*2 + t * CFG.speed
+            local wave = math.sin(t*2.5 + (i/n) * math.pi*4) * CFG.height
+            return Vector3.new(c.X + math.cos(a)*CFG.radius, c.Y + wave + 3, c.Z + math.sin(a)*CFG.radius)
+        end
+    },
+    {
+        name = "Spiral",
+        fn = function(i, n, t, c)
+            local a    = (i/n) * math.pi*2 + t * CFG.speed
+            local yOff = ((t*0.6 + i/n) % 1.0) * CFG.height*4 - CFG.height*2
+            return Vector3.new(c.X + math.cos(a)*CFG.radius, c.Y + yOff, c.Z + math.sin(a)*CFG.radius)
+        end
+    },
+    {
+        name = "Figure 8",
+        fn = function(i, n, t, c)
+            local a     = (i/n) * math.pi*2 + t * CFG.speed
+            local denom = 1 + math.sin(a)^2
+            local x     = CFG.radius * math.cos(a) / denom
+            local z     = CFG.radius * math.sin(a) * math.cos(a) / denom
+            local y     = math.sin(t + i*0.3) * CFG.height * 0.5
+            return Vector3.new(c.X + x, c.Y + y + 3, c.Z + z)
+        end
+    },
+    {
+        name = "Pulse",
+        fn = function(i, n, t, c)
+            local a = (i/n) * math.pi*2
+            local r = CFG.radius * (0.4 + 0.6 * math.abs(math.sin(t*2.5 + i*0.15)))
+            local y = math.sin(t*1.8 + i*0.4) * CFG.height * 0.4
+            return Vector3.new(c.X + math.cos(a + t*CFG.speed)*r, c.Y + y + 3, c.Z + math.sin(a + t*CFG.speed)*r)
+        end
+    },
+    {
+        name = "Galaxy",
+        fn = function(i, n, t, c)
+            local frac   = i/n
+            local arms   = 3
+            local armOff = math.floor(i / (n/arms)) * (math.pi*2/arms)
+            local a      = frac * math.pi*4 + armOff + t * CFG.speed * 0.5
+            local r      = frac * CFG.radius * 1.3
+            local y      = math.sin(frac * math.pi*2) * CFG.height * 0.25
+            return Vector3.new(c.X + math.cos(a)*r, c.Y + y + 3, c.Z + math.sin(a)*r)
+        end
+    },
+    {
+        name = "Chaos",
+        fn = function(i, n, t, c)
+            local seed = i * 137.508 + t * 0.35
+            local a1   = seed * 2.399963
+            local a2   = seed * 1.618034
+            local r    = CFG.radius * (0.4 + 0.6 * math.abs(math.sin(seed)))
+            return Vector3.new(
+                c.X + math.cos(a1) * r,
+                c.Y + math.sin(a2) * CFG.height + 3,
+                c.Z + math.sin(a1) * r
+            )
+        end
+    },
+    {
+        name = "Crystal",
+        fn = function(i, n, t, c)
+            local layers  = 3
+            local perLayer = math.ceil(n/layers)
+            local layer   = math.floor((i-1)/perLayer)
+            local inLayer = ((i-1) % perLayer) + 1
+            local a       = (inLayer/perLayer) * math.pi*2 + t*CFG.speed + layer * math.pi/layers
+            local tilt    = math.pi * 0.3 * (layer - 1)
+            local r       = CFG.radius * 0.75
+            return Vector3.new(
+                c.X + math.cos(a)*r,
+                c.Y + math.sin(tilt)*r + (layer-1)*CFG.height,
+                c.Z + math.sin(a)*r * math.cos(tilt)
+            )
+        end
+    },
+    {
+        name = "Bounce",
+        fn = function(i, n, t, c)
+            local a     = (i/n) * math.pi*2 + t * CFG.speed * 0.5
+            local phase = (i/n) * math.pi*2
+            local y     = math.abs(math.sin(t*2.8 + phase)) * CFG.height * 2
+            return Vector3.new(c.X + math.cos(a)*CFG.radius, c.Y + y, c.Z + math.sin(a)*CFG.radius)
+        end
+    },
+    {
+        name = "Flower",
+        fn = function(i, n, t, c)
+            local a      = (i/n) * math.pi*2 + t * CFG.speed * 0.4
+            local petals = 5
+            local r      = CFG.radius * math.abs(math.cos(petals * a * 0.5))
+            local y      = math.sin(t*1.5 + i*0.3) * CFG.height * 0.4
+            return Vector3.new(c.X + math.cos(a)*r, c.Y + y + 3, c.Z + math.sin(a)*r)
+        end
+    },
+    --// ══════════════ ESTILOS v2 ══════════════
+    {
+        name = "Supernova",
+        fn = function(i, n, t, c)
+            local a     = (i/n) * math.pi*2 + t * CFG.speed
+            local pulse = (math.sin(t*1.6) + 1) / 2
+            local r     = CFG.radius * (0.15 + pulse * 0.95)
+            local y     = math.sin(a*2 + t) * CFG.height * 0.3
+            return Vector3.new(c.X + math.cos(a)*r, c.Y + y + 3, c.Z + math.sin(a)*r)
+        end
+    },
+    {
+        name = "Black Hole",
+        fn = function(i, n, t, c)
+            local frac = ((i/n) + t * 0.15) % 1.0
+            local a    = frac * math.pi * 10 + i
+            local r    = CFG.radius * (1 - frac) * 1.1
+            local y    = (frac - 0.5) * CFG.height * 0.6
+            return Vector3.new(c.X + math.cos(a)*r, c.Y + y + 3, c.Z + math.sin(a)*r)
+        end
+    },
+    {
+        name = "Meteor Rain",
+        fn = function(i, n, t, c)
+            local frac = ((i/n) + t * 0.5) % 1.0
+            local a    = (i/n) * math.pi*2 + t * CFG.speed
+            local topY = CFG.height * 2.5
+            local y    = topY - frac * (topY + CFG.height*1.5)
+            local r    = CFG.radius * (0.5 + frac*0.5)
+            return Vector3.new(c.X + math.cos(a)*r, c.Y + y + 3, c.Z + math.sin(a)*r)
+        end
+    },
+    {
+        name = "Meteoritos",
+        fn = function(i, n, t, c)
+            -- Cada parte cae desde arriba y desde un radio exterior hasta
+            -- el centro del jugador. Al completar la fase vuelve al inicio,
+            -- produciendo impactos repetidos en el mismo ciclo.
+            local phase = ((t * 0.85) + ((i - 1) / math.max(n, 1))) % 1.0
+            local a = (i / math.max(n, 1)) * math.pi * 2 + math.sin(i * 4.17) * 0.35
+            local r = CFG.radius * (1.05 - phase)
+            local y = c.Y + 3 + (1 - phase) * (CFG.height * 3.5 + 18)
+            return Vector3.new(c.X + math.cos(a) * r, y, c.Z + math.sin(a) * r)
+        end
+    },
+    {
+        name = "Twin Vortex",
+        fn = function(i, n, t, c)
+            local half     = (i <= n/2)
+            local dir      = half and 1 or -1
+            local localN   = math.max(math.ceil(n/2), 1)
+            local localIdx = half and i or (i - math.floor(n/2))
+            local frac     = localIdx / localN
+            local a        = frac * math.pi*4 + t * CFG.speed * dir
+            local r        = CFG.radius * (0.2 + frac * 0.8)
+            local y        = (half and 1 or -1) * frac * CFG.height * 1.5
+            return Vector3.new(c.X + math.cos(a)*r, c.Y + y + 3, c.Z + math.sin(a)*r)
+        end
+    },
+    {
+        name = "Infinity Storm",
+        fn = function(i, n, t, c)
+            local a       = (i/n) * math.pi*2 + t * CFG.speed * 1.3
+            local denom   = 1 + math.sin(a)^2
+            local x       = CFG.radius * 1.3 * math.cos(a) / denom
+            local z       = CFG.radius * 1.3 * math.sin(a) * math.cos(a) / denom
+            local turb    = math.sin(t*5 + i*1.7) * CFG.height * 0.35
+            return Vector3.new(c.X + x, c.Y + turb + 3, c.Z + z)
+        end
+    },
+}
+
+-- ── Helpers (Ring) ────────────────────────────────────────────────────────
+local function getCenter()
+    local char = targetPlayer and targetPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    return root and root.Position or Vector3.new(0, 3, 0)
+end
+
+local function isInCharacter(part)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Character and part:IsDescendantOf(p.Character) then
+            return true
+        end
+    end
+    return false
+end
+
+--// Descarta partes conectadas rígidamente a otra cosa (Weld/Motor6D/
+--// WeldConstraint/etc). AssemblyLinearVelocity mueve TODO el conjunto
+--// conectado, no solo esta parte — si estuviera soldada a una estructura
+--// grande, solo esta parte tendría CanCollide=false mientras el resto
+--// sigue sólido y viaja a alta velocidad. Esa es la causa real de que
+--// algunas partes "desaparecieran" (salen del área cargada) y de que
+--// el jugador saliera empujado (la estructura sólida lo golpea).
+local function isStandalonePart(part)
+    local ok, connected = pcall(function() return part:GetConnectedParts(true) end)
+    if not ok or not connected then return false end
+    for _, other in ipairs(connected) do
+        if other ~= part then
+            return false
+        end
+    end
+    return true
+end
+
+--// GAP REAL que isStandalonePart NO cubre (confirmado con la
+--// documentación oficial de Roblox): GetConnectedParts SOLO detecta
+--// Weld · Snap · ManualWeld · Motor · Motor6D · WeldConstraint. NO
+--// detecta HingeConstraint, RigidConstraint, BallSocketConstraint,
+--// PrismaticConstraint, CylindricalConstraint, UniversalConstraint,
+--// SpringConstraint, TorsionSpringConstraint, RopeConstraint ni
+--// RodConstraint — hay reportes de otros desarrolladores topándose con
+--// este mismo hueco en autos (la rueda unida solo por HingeConstraint
+--// no aparece como "conectada"). Sin este chequeo extra, el Ring podría
+--// agarrar, por ejemplo, la rueda de un auto sin tocar el chasis, y al
+--// moverla a alta velocidad arrastra o desarma el vehículo entero —
+--// el mismo problema que el chequeo de arriba ya evitaba, pero por una
+--// vía que ese chequeo no cubre.
+--//
+--// Se usa IsA("Constraint") (clase abstracta real, confirmada) en vez
+--// de una lista manual de nombres, para no quedar corto si Roblox agrega
+--// un tipo de constraint nuevo. Solo cuenta si el constraint está
+--// Enabled y tiene AMBOS Attachment0/Attachment1 apuntando a dos partes
+--// distintas — así se descartan solos los constraints de una sola
+--// parte (VectorForce, AlignPosition en modo mundo, etc.) y también
+--// NoCollisionConstraint/WeldConstraint (que no usan Attachment0/1, y
+--// WeldConstraint ya está cubierto arriba).
+local function buildConstrainedLookup(descendants)
+    local constrained = {}
+    local scanned = 0
+    for _, inst in ipairs(descendants) do
+        if inst:IsA("Constraint") then
+            local okEnabled, enabled = pcall(function() return inst.Enabled end)
+            if okEnabled and enabled ~= false then
+                local okA0, a0 = pcall(function() return inst.Attachment0 end)
+                local okA1, a1 = pcall(function() return inst.Attachment1 end)
+                if okA0 and okA1 and a0 and a1 then
+                    local p0, p1 = a0.Parent, a1.Parent
+                    if p0 and p1 and p0 ~= p1 and p0:IsA("BasePart") and p1:IsA("BasePart") then
+                        constrained[p0] = true
+                        constrained[p1] = true
+                    end
+                end
+            end
+        end
+        scanned = scanned + 1
+        if scanned >= 64 then
+            scanned = 0
+            task.wait()
+            if not active then return constrained end
+        end
+    end
+    return constrained
+end
+
+--// Prepara una parte para el efecto. Devuelve true solo si se pudo
+--// aplicar de forma segura — si falla, la parte NO se agrega al ring.
+local function preparePart(part)
+    local ok = pcall(function()
+        -- El Ring conserva colisión durante todo el efecto, incluidos los
+        -- meteoritos que deben impactar contra el jugador.
+        part.CanCollide = true
+        part.Massless   = true
+    end)
+    return ok
+end
+
+local function isEligible(part, alreadyManaged, constrained)
+    if not part:IsA("BasePart") then return false end
+    if part.Anchored then return false end
+    if alreadyManaged[part] then return false end
+    if isInCharacter(part) then return false end
+    if not isStandalonePart(part) then return false end
+    if constrained[part] then return false end
+    return true
+end
+
+local function collectParts()
+    managedParts = {}
+    local seen = {}
+    local descendants = workspace:GetDescendants()
+    local constrained = buildConstrainedLookup(descendants)
+    if not active then return end
+
+    local scanned = 0
+    for _, part in ipairs(descendants) do
+        if #managedParts >= CFG.maxParts then break end
+        if isEligible(part, seen, constrained) then
+            if preparePart(part) then
+                table.insert(managedParts, part)
+                seen[part] = true
+            end
+        end
+        scanned = scanned + 1
+        if scanned >= 64 then
+            scanned = 0
+            task.wait()
+            if not active then return end
+        end
+    end
+end
+
+--// Relleno periódico: si partes dejaron de ser válidas (destruidas,
+--// recogidas, conectadas a algo mientras estaban en el ring, etc.),
+--// las libera y busca reemplazos nuevos para mantener el ring lleno.
+local function topUpParts()
+    if not active then return end
+    local descendants = workspace:GetDescendants()
+    local constrained  = buildConstrainedLookup(descendants)
+    if not active then return end
+
+    -- Purga referencias muertas y libera partes que dejaron de ser
+    -- standalone (alguien las soldó/conectó mientras estaban en el ring):
+    -- si se las deja adentro, seguirían arrastrando lo que se les conectó.
+    local alive = {}
+    local seen  = {}
+    local scanned = 0
+    for _, part in ipairs(managedParts) do
+        if part and part.Parent then
+            if constrained[part] or not isStandalonePart(part) then
+                pcall(function()
+                    part.AssemblyLinearVelocity = Vector3.zero
+                    part.CanCollide = true
+                    part.Massless   = false
+                end)
+            else
+                table.insert(alive, part)
+                seen[part] = true
+            end
+        end
+        scanned = scanned + 1
+        if scanned >= 32 then
+            scanned = 0
+            task.wait()
+            if not active then return end
+        end
+    end
+    managedParts = alive
+
+    if #managedParts >= CFG.maxParts then return end
+
+    scanned = 0
+    for _, part in ipairs(descendants) do
+        if #managedParts >= CFG.maxParts then break end
+        if isEligible(part, seen, constrained) then
+            if preparePart(part) then
+                table.insert(managedParts, part)
+                seen[part] = true
+            end
+        end
+        scanned = scanned + 1
+        if scanned >= 64 then
+            scanned = 0
+            task.wait()
+            if not active then return end
+        end
+    end
+end
+
+local function restoreParts()
+    for _, part in ipairs(managedParts) do
+        if part and part.Parent then
+            pcall(function()
+                part.AssemblyLinearVelocity = Vector3.zero
+                part.CanCollide = true
+                part.Massless   = false
+            end)
+        end
+    end
+    managedParts = {}
+end
+
+local function startRing()
+    collectParts()
+    if not active then
+        restoreParts()
+        return
+    end
+    pcall(function() sethiddenproperty(lp, "SimulationRadius", math.huge) end)
+
+    if heartbeatCon then heartbeatCon:Disconnect() end
+    heartbeatCon = RS.Heartbeat:Connect(function(dt)
+        if not active then return end
+        t = t + dt
+        local n = #managedParts
+        if n == 0 then return end
+        local center = getCenter()
+        local style  = STYLES[styleIdx]
+        if not style then return end
+        for i, part in ipairs(managedParts) do
+            if part and part.Parent then
+                local target = style.fn(i, n, t, center)
+                local vel    = target - part.Position
+                local mag    = vel.Magnitude
+                if mag > 0.01 then
+                    pcall(function()
+                        part.AssemblyLinearVelocity = (vel / mag) * math.min(mag * 9, CFG.force)
+                    end)
+                end
+            end
+        end
+    end)
+
+    if topUpCon then topUpCon:Disconnect() end
+    topUpCon = task.spawn(function()
+        while active do
+            task.wait(3)
+            if active and not topUpBusy then
+                topUpBusy = true
+                pcall(topUpParts)
+                topUpBusy = false
+            end
+        end
+    end)
+end
+
+local function stopRing()
+    if heartbeatCon then
+        heartbeatCon:Disconnect()
+        heartbeatCon = nil
+    end
+    topUpCon = nil -- el while active dentro del task.spawn corta solo
+    topUpBusy = false
+    restoreParts()
+end
+
+-- ── Fly Car ═════════════════════════════════════════════════════════════
+--// POR QUÉ ESTO NO SE DESARMA (a diferencia de aplicar velocidad directa):
+--// Un auto normal tiene las ruedas unidas al chasis con HingeConstraint,
+--// que NO es una unión rígida — es una física que "persigue" al chasis
+--// cada frame. Si el chasis salta de golpe a alta velocidad, esa
+--// persecución falla y la rueda se queda atrás: el modelo se desarma.
+--//
+--// La solución: ANCLAR todas las piezas del modelo mientras vuela, y
+--// recalcular manualmente el CFrame de cada una, cada frame, a partir
+--// de su posición relativa original respecto a la pieza principal
+--// (flyPrimary). Con esto ya no depende de NINGUNA física — ni Weld,
+--// ni Motor6D, ni HingeConstraint — así que es matemáticamente
+--// imposible que se separe, sin importar cuántas piezas tenga.
+
+local function findSeatModel()
+    local char = lp.Character
+    local hum  = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum or not hum.SeatPart then return nil end
+
+    local seat  = hum.SeatPart
+    local model = seat:FindFirstAncestorOfClass("Model") or seat.Parent
+    return model
+end
+
+local function findLookAtModel()
+    local char = lp.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local cam  = workspace.CurrentCamera
+    if not root or not cam then return nil end
+
+    local origin    = cam.CFrame.Position
+    local direction = cam.CFrame.LookVector * 300
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { char }
+
+    local result = workspace:Raycast(origin, direction, params)
+    if not result or not result.Instance then return nil end
+
+    local model = result.Instance:FindFirstAncestorOfClass("Model")
+    return model
+end
+
+--// Junta todas las BasePart de un modelo, sin superar FLYCFG.maxParts.
+local function gatherModelParts(model)
+    local parts = {}
+    for _, inst in ipairs(model:GetDescendants()) do
+        if inst:IsA("BasePart") then
+            table.insert(parts, inst)
+            if #parts >= FLYCFG.maxParts then break end
+        end
+    end
+    if model:IsA("BasePart") then
+        table.insert(parts, model)
+    end
+    return parts
+end
+
+local flyStatusLabel = nil -- referencia asignada más abajo, al crear la GUI
+
+local function setFlyStatus(text, color)
+    if flyStatusLabel then
+        flyStatusLabel.Text = text
+        if color then flyStatusLabel.TextColor3 = color end
+    end
+end
+
+local function stopFlyCar()
+    if flyHeartbeatCon then
+        flyHeartbeatCon:Disconnect()
+        flyHeartbeatCon = nil
+    end
+
+    for part, orig in pairs(flyOriginal) do
+        if part and part.Parent then
+            pcall(function()
+                part.Anchored   = orig.Anchored
+                part.CanCollide = orig.CanCollide
+            end)
+        end
+    end
+
+    flyOffsets  = {}
+    flyOriginal = {}
+    flyModel    = nil
+    flyPrimary  = nil
+    flyActive   = false
+    setFlyStatus("Sin objetivo", Color3.fromRGB(190, 193, 202))
+end
+
+local function startFlyCar(model)
+    if not model then
+        setFlyStatus("No se encontró ningún modelo", Color3.fromRGB(255, 150, 150))
+        return
+    end
+
+    if flyActive then stopFlyCar() end
+
+    local parts = gatherModelParts(model)
+    if #parts == 0 then
+        setFlyStatus("El modelo no tiene partes", Color3.fromRGB(255, 150, 150))
+        return
+    end
+
+    --// Pieza principal: PrimaryPart si está seteado, si no la más grande
+    --// (más grande = ancla más estable visualmente, menos "bamboleo").
+    local primary = model.PrimaryPart
+    if not primary or not table.find(parts, primary) then
+        local bestVolume = -1
+        for _, part in ipairs(parts) do
+            local size = part.Size
+            local vol  = size.X * size.Y * size.Z
+            if vol > bestVolume then
+                bestVolume = vol
+                primary    = part
+            end
+        end
+    end
+    if not primary then
+        setFlyStatus("No se pudo elegir pieza principal", Color3.fromRGB(255, 150, 150))
+        return
+    end
+
+    flyModel   = model
+    flyPrimary = primary
+    flyCFrame  = primary.CFrame
+    flyOffsets = {}
+    flyOriginal = {}
+
+    for _, part in ipairs(parts) do
+        flyOriginal[part] = { Anchored = part.Anchored, CanCollide = part.CanCollide }
+        flyOffsets[part]  = primary.CFrame:ToObjectSpace(part.CFrame)
+        pcall(function()
+            part.Anchored   = true
+            part.CanCollide = false
+        end)
+    end
+
+    flyActive = true
+    setFlyStatus("Volando: " .. model.Name, Color3.fromRGB(220, 255, 225))
+
+    if flyHeartbeatCon then flyHeartbeatCon:Disconnect() end
+    flyHeartbeatCon = RS.Heartbeat:Connect(function(dt)
+        if not flyActive then return end
+
+        local turnInput = (flyKeys.D and 1 or 0) - (flyKeys.A and 1 or 0)
+        local moveInput  = (flyKeys.W and 1 or 0) - (flyKeys.S and 1 or 0)
+        local vertInput  = (flyKeys.Up and 1 or 0) - (flyKeys.Down and 1 or 0)
+
+        if turnInput ~= 0 then
+            flyCFrame = flyCFrame * CFrame.Angles(0, -turnInput * FLYCFG.turnSpeed * dt, 0)
+        end
+
+        local moveDelta = Vector3.zero
+        if moveInput ~= 0 then
+            moveDelta = flyCFrame.LookVector * moveInput * FLYCFG.moveSpeed * dt
+        end
+        if vertInput ~= 0 then
+            moveDelta = moveDelta + Vector3.new(0, vertInput * FLYCFG.vertSpeed * dt, 0)
+        end
+
+        if moveDelta.Magnitude > 0 then
+            flyCFrame = flyCFrame + moveDelta
+        end
+
+        for part, offset in pairs(flyOffsets) do
+            if part and part.Parent then
+                part.CFrame = flyCFrame * offset
+            end
+        end
+    end)
+end
+
+local function toggleFlyCar()
+    if flyActive then
+        stopFlyCar()
+        return
+    end
+    local model = findSeatModel() or findLookAtModel()
+    startFlyCar(model)
+end
+
+-- ── GUI (estilo Yin Yang / HideGuis: panel glassy + borde animado) ───────
+local BG        = Color3.fromRGB(40,  40,  45)    -- Secondary
+local ACCENT    = Color3.fromRGB(255, 255, 255)   -- Accent
+local ON_CLR    = Color3.fromRGB(52,  199, 89)
+local OFF_CLR   = Color3.fromRGB(180, 50,  50)
+local SURFACE   = Color3.fromRGB(24,  24,  29)
+local TXT       = Color3.fromRGB(230, 230, 235)
+local TXT_DIM   = Color3.fromRGB(190, 193, 202)
+local BTN_CLR   = Color3.fromRGB(52,  52,  60)
+local SEL_CLR   = Color3.fromRGB(35,  90,  55)
+local FLY_CLR   = Color3.fromRGB(45,  70,  140)
+
+local gui = Instance.new("ScreenGui")
+gui.Name           = "_SuperRing"
+gui.ResetOnSpawn   = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder   = 9999
+gui.Parent         = pg
+
+local function mk(cls, props, parent)
+    local o = Instance.new(cls)
+    for k, v in pairs(props) do o[k] = v end
+    if parent then o.Parent = parent end
+    return o
+end
+
+local function corner(inst, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 8)
+    c.Parent = inst
+    return c
+end
+
+-- ── Panel principal (glassy, igual que HideGuis) ─────────────────────────
+local panel = mk("Frame", {
+    Size = UDim2.fromOffset(224, 452),
+    Position = UDim2.new(0, 16, 0, 100),
+    BackgroundColor3 = BG,
+    BackgroundTransparency = 0.30,
+    BorderSizePixel = 0,
+    ZIndex = 2,
+}, gui)
+corner(panel, 14)
+
+local glassy = Instance.new("UIGradient")
+glassy.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0,   Color3.fromRGB(180, 185, 200)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(240, 243, 250)),
+    ColorSequenceKeypoint.new(1,   Color3.fromRGB(180, 185, 200)),
+})
+glassy.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0,   0.72),
+    NumberSequenceKeypoint.new(0.5, 0.55),
+    NumberSequenceKeypoint.new(1,   0.72),
+})
+glassy.Rotation = 90
+glassy.Parent   = panel
+
+local pStroke = mk("UIStroke", {
+    Thickness = 2,
+    Color = ACCENT,
+    Transparency = 0.20,
+    LineJoinMode = Enum.LineJoinMode.Round,
+}, panel)
+
+local h, s, v     = Color3.toHSV(ACCENT)
+local accentLight = Color3.fromHSV(h, math.max(0, s - 0.3), math.min(1, v + 0.25))
+local accentDark  = Color3.fromHSV(h, math.min(1, s + 0.1), math.max(0, v - 0.25))
+
+local strokeGrad = mk("UIGradient", {
+    Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0,   accentDark),
+        ColorSequenceKeypoint.new(0.5, accentLight),
+        ColorSequenceKeypoint.new(1,   accentDark),
+    }),
+    Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0,   0.4),
+        NumberSequenceKeypoint.new(0.5, 0),
+        NumberSequenceKeypoint.new(1,   0.4),
+    }),
+    Offset = Vector2.new(-1.5, 0),
+}, pStroke)
+
+TS:Create(
+    strokeGrad,
+    TweenInfo.new(1.4, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1, false),
+    { Offset = Vector2.new(1.5, 0) }
+):Play()
+TS:Create(
+    pStroke,
+    TweenInfo.new(1.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+    { Transparency = 0.0 }
+):Play()
+
+-- Header / zona de arrastre
+local header = mk("Frame", {
+    Size = UDim2.fromOffset(224, 36),
+    BackgroundTransparency = 1,
+    ZIndex = 3,
+}, panel)
+mk("TextLabel", {
+    Size = UDim2.new(1, 0, 1, 0),
+    BackgroundTransparency = 1,
+    Text = "YIN YANG",
+    TextColor3 = TXT,
+    Font = Enum.Font.GothamBlack,
+    TextSize = 14,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    ZIndex = 3,
+}, header)
+
+-- Toggle Ring
+local toggleBtn = mk("TextButton", {
+    Size = UDim2.fromOffset(204, 34),
+    Position = UDim2.fromOffset(10, 40),
+    BackgroundColor3 = ON_CLR,
+    Text = "▶  START RING",
+    TextColor3 = Color3.fromRGB(255, 255, 255),
+    Font = Enum.Font.GothamBold,
+    TextSize = 13,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    ZIndex = 3,
+}, panel)
+corner(toggleBtn, 8)
+
+-- Style selector
+mk("TextLabel", {
+    Size = UDim2.fromOffset(204, 16),
+    Position = UDim2.fromOffset(10, 83),
+    BackgroundTransparency = 1,
+    Text = "ESTILO DE MOVIMIENTO",
+    TextColor3 = TXT_DIM,
+    Font = Enum.Font.GothamBold,
+    TextSize = 9,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 3,
+}, panel)
+
+local prevBtn = mk("TextButton", {
+    Size = UDim2.fromOffset(28, 28),
+    Position = UDim2.fromOffset(10, 99),
+    BackgroundColor3 = BTN_CLR,
+    Text = "◀",
+    TextColor3 = TXT,
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    ZIndex = 3,
+}, panel)
+corner(prevBtn, 7)
+
+local styleLabel = mk("TextLabel", {
+    Size = UDim2.fromOffset(136, 28),
+    Position = UDim2.fromOffset(42, 99),
+    BackgroundColor3 = SURFACE,
+    Text = STYLES[1].name,
+    TextColor3 = TXT,
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    BorderSizePixel = 0,
+    ZIndex = 3,
+}, panel)
+corner(styleLabel, 7)
+
+local nextBtn = mk("TextButton", {
+    Size = UDim2.fromOffset(28, 28),
+    Position = UDim2.fromOffset(182, 99),
+    BackgroundColor3 = BTN_CLR,
+    Text = "▶",
+    TextColor3 = TXT,
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    ZIndex = 3,
+}, panel)
+corner(nextBtn, 7)
+
+-- Power selector
+mk("TextLabel", {
+    Size = UDim2.fromOffset(204, 16),
+    Position = UDim2.fromOffset(10, 136),
+    BackgroundTransparency = 1,
+    Text = "POTENCIA",
+    TextColor3 = TXT_DIM,
+    Font = Enum.Font.GothamBold,
+    TextSize = 9,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 3,
+}, panel)
+
+local powerMinus = mk("TextButton", {
+    Size = UDim2.fromOffset(28, 28),
+    Position = UDim2.fromOffset(10, 152),
+    BackgroundColor3 = BTN_CLR,
+    Text = "−",
+    TextColor3 = TXT,
+    Font = Enum.Font.GothamBold,
+    TextSize = 14,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    ZIndex = 3,
+}, panel)
+corner(powerMinus, 7)
+
+local powerValue = mk("TextLabel", {
+    Size = UDim2.fromOffset(136, 28),
+    Position = UDim2.fromOffset(42, 152),
+    BackgroundColor3 = SURFACE,
+    Text = tostring(CFG.force) .. " u/s",
+    TextColor3 = TXT,
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    BorderSizePixel = 0,
+    ZIndex = 3,
+}, panel)
+corner(powerValue, 7)
+
+local powerPlus = mk("TextButton", {
+    Size = UDim2.fromOffset(28, 28),
+    Position = UDim2.fromOffset(182, 152),
+    BackgroundColor3 = BTN_CLR,
+    Text = "+",
+    TextColor3 = TXT,
+    Font = Enum.Font.GothamBold,
+    TextSize = 14,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    ZIndex = 3,
+}, panel)
+corner(powerPlus, 7)
+
+-- Separador
+mk("Frame", {
+    Size = UDim2.fromOffset(204, 1),
+    Position = UDim2.fromOffset(10, 189),
+    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+    BackgroundTransparency = 0.85,
+    BorderSizePixel = 0,
+    ZIndex = 3,
+}, panel)
+
+-- ── Fly Car ───────────────────────────────────────────────────────────────
+mk("TextLabel", {
+    Size = UDim2.fromOffset(204, 16),
+    Position = UDim2.fromOffset(10, 196),
+    BackgroundTransparency = 1,
+    Text = "FLY CAR",
+    TextColor3 = TXT_DIM,
+    Font = Enum.Font.GothamBold,
+    TextSize = 9,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 3,
+}, panel)
+
+local flyToggleBtn = mk("TextButton", {
+    Size = UDim2.fromOffset(204, 30),
+    Position = UDim2.fromOffset(10, 212),
+    BackgroundColor3 = FLY_CLR,
+    Text = "🚗  ACTIVAR (auto o lo que mires)",
+    TextColor3 = TXT,
+    Font = Enum.Font.GothamBold,
+    TextSize = 11,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    ZIndex = 3,
+}, panel)
+corner(flyToggleBtn, 8)
+
+flyStatusLabel = mk("TextLabel", {
+    Size = UDim2.fromOffset(204, 14),
+    Position = UDim2.fromOffset(10, 244),
+    BackgroundTransparency = 1,
+    Text = "Sin objetivo",
+    TextColor3 = TXT_DIM,
+    Font = Enum.Font.Gotham,
+    TextSize = 10,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    ZIndex = 3,
+}, panel)
+
+-- Controles direccionales (mantener presionado — funciona con touch y mouse)
+local function flyDirBtn(text, xOff, yOff)
+    local b = mk("TextButton", {
+        Size = UDim2.fromOffset(46, 30),
+        Position = UDim2.fromOffset(xOff, yOff),
+        BackgroundColor3 = BTN_CLR,
+        Text = text,
+        TextColor3 = TXT,
+        Font = Enum.Font.GothamBold,
+        TextSize = 14,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        ZIndex = 3,
+    }, panel)
+    corner(b, 7)
+    return b
+end
+
+local flyFwdBtn   = flyDirBtn("▲",  60, 262)
+local flyLeftBtn  = flyDirBtn("◀",  10, 296)
+local flyBackBtn  = flyDirBtn("▼",  60, 296)
+local flyRightBtn = flyDirBtn("▶", 110, 296)
+local flyUpBtn    = flyDirBtn("⤒", 158, 262)
+local flyDownBtn  = flyDirBtn("⤓", 158, 296)
+
+local function bindHold(btn, key)
+    btn.MouseButton1Down:Connect(function() flyKeys[key] = true end)
+    btn.MouseButton1Up:Connect(function() flyKeys[key] = false end)
+    btn.MouseLeave:Connect(function() flyKeys[key] = false end)
+end
+bindHold(flyFwdBtn,   "W")
+bindHold(flyBackBtn,  "S")
+bindHold(flyLeftBtn,  "A")
+bindHold(flyRightBtn, "D")
+bindHold(flyUpBtn,    "Up")
+bindHold(flyDownBtn,  "Down")
+
+-- Teclado (PC): mismas teclas, para quien juegue con teclado
+local KEY_MAP = {
+    [Enum.KeyCode.W] = "W", [Enum.KeyCode.S] = "S",
+    [Enum.KeyCode.A] = "A", [Enum.KeyCode.D] = "D",
+    [Enum.KeyCode.Space] = "Up", [Enum.KeyCode.LeftShift] = "Down",
+}
+UIS.InputBegan:Connect(function(inp, processed)
+    if processed then return end
+    local key = KEY_MAP[inp.KeyCode]
+    if key then flyKeys[key] = true end
+end)
+UIS.InputEnded:Connect(function(inp)
+    local key = KEY_MAP[inp.KeyCode]
+    if key then flyKeys[key] = false end
+end)
+
+-- Separador
+mk("Frame", {
+    Size = UDim2.fromOffset(204, 1),
+    Position = UDim2.fromOffset(10, 334),
+    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+    BackgroundTransparency = 0.85,
+    BorderSizePixel = 0,
+    ZIndex = 3,
+}, panel)
+
+-- Player selector
+mk("TextLabel", {
+    Size = UDim2.fromOffset(204, 16),
+    Position = UDim2.fromOffset(10, 341),
+    BackgroundTransparency = 1,
+    Text = "ORBITAR A:",
+    TextColor3 = TXT_DIM,
+    Font = Enum.Font.GothamBold,
+    TextSize = 9,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 3,
+}, panel)
+
+local plrScroll = mk("ScrollingFrame", {
+    Size = UDim2.fromOffset(204, 78),
+    Position = UDim2.fromOffset(10, 358),
+    BackgroundColor3 = SURFACE,
+    BackgroundTransparency = 0.15,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = Color3.fromRGB(70, 70, 85),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    ZIndex = 3,
+}, panel)
+corner(plrScroll, 8)
+mk("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, plrScroll)
+
+local selectedBtn = nil
+
+--// FIX v3: usaba p.Name (username, difícil de reconocer) en vez de
+--// p.DisplayName (el apodo que la gente realmente ve y usa) — tanto
+--// para ordenar la lista como para el texto mostrado.
+local function buildPlayerList()
+    for _, c in ipairs(plrScroll:GetChildren()) do
+        if c:IsA("TextButton") then c:Destroy() end
+    end
+    selectedBtn = nil
+
+    local list = Players:GetPlayers()
+    table.sort(list, function(a, b)
+        if a == lp then return true end
+        if b == lp then return false end
+        return a.DisplayName < b.DisplayName
+    end)
+
+    for idx, p in ipairs(list) do
+        local isSelf = (p == lp)
+        local isSel  = (p == targetPlayer)
+        local btn = mk("TextButton", {
+            Size = UDim2.new(1, 0, 0, 26),
+            BackgroundColor3 = isSel and SEL_CLR or SURFACE,
+            BackgroundTransparency = isSel and 0 or 0.3,
+            Text = (isSelf and "★  " or "    ") .. p.DisplayName,
+            TextColor3 = isSelf and Color3.fromRGB(255, 215, 55) or TXT,
+            Font = Enum.Font.Gotham,
+            TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            LayoutOrder = idx,
+            ZIndex = 3,
+        }, plrScroll)
+        mk("UIPadding", { PaddingLeft = UDim.new(0, 10) }, btn)
+
+        if isSel then selectedBtn = btn end
+
+        btn.MouseButton1Click:Connect(function()
+            if selectedBtn and selectedBtn.Parent then
+                selectedBtn.BackgroundColor3 = SURFACE
+                selectedBtn.BackgroundTransparency = 0.3
+            end
+            targetPlayer = p
+            btn.BackgroundColor3 = SEL_CLR
+            btn.BackgroundTransparency = 0
+            selectedBtn = btn
+        end)
+    end
+end
+
+buildPlayerList()
+
+local refreshBtn = mk("TextButton", {
+    Size = UDim2.fromOffset(204, 24),
+    Position = UDim2.fromOffset(10, 418),
+    BackgroundColor3 = BTN_CLR,
+    Text = "↻  Actualizar lista",
+    TextColor3 = TXT_DIM,
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    ZIndex = 3,
+}, panel)
+corner(refreshBtn, 7)
+
+-- ── Drag ─────────────────────────────────────────────────────────────────
+local dragging    = false
+local moved       = false
+local dragOrigin  = Vector2.zero
+local panelOrigin = UDim2.new()
+local THRESHOLD   = 6
+
+header.InputBegan:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.Touch
+    or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging    = true
+        moved       = false
+        dragOrigin  = inp.Position
+        panelOrigin = panel.Position
+    end
+end)
+
+UIS.InputChanged:Connect(function(inp)
+    if not dragging then return end
+    if inp.UserInputType == Enum.UserInputType.Touch
+    or inp.UserInputType == Enum.UserInputType.MouseMovement then
+        local d = inp.Position - dragOrigin
+        if not moved and (math.abs(d.X) > THRESHOLD or math.abs(d.Y) > THRESHOLD) then
+            moved = true
+        end
+        if moved then
+            panel.Position = UDim2.new(
+                panelOrigin.X.Scale, panelOrigin.X.Offset + d.X,
+                panelOrigin.Y.Scale, panelOrigin.Y.Offset + d.Y
+            )
+        end
+    end
+end)
+
+UIS.InputEnded:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.Touch
+    or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = false
+        moved    = false
+    end
+end)
+
+-- ── Botones ───────────────────────────────────────────────────────────────
+toggleBtn.MouseButton1Click:Connect(function()
+    active = not active
+    if active then
+        startRing()
+        toggleBtn.Text = "■  STOP RING"
+        toggleBtn.BackgroundColor3 = OFF_CLR
+    else
+        stopRing()
+        toggleBtn.Text = "▶  START RING"
+        toggleBtn.BackgroundColor3 = ON_CLR
+    end
+end)
+
+prevBtn.MouseButton1Click:Connect(function()
+    styleIdx = ((styleIdx - 2) % #STYLES) + 1
+    styleLabel.Text = STYLES[styleIdx].name
+end)
+
+nextBtn.MouseButton1Click:Connect(function()
+    styleIdx = (styleIdx % #STYLES) + 1
+    styleLabel.Text = STYLES[styleIdx].name
+end)
+
+powerMinus.MouseButton1Click:Connect(function()
+    CFG.force = math.max(FORCE_MIN, CFG.force - FORCE_STEP)
+    powerValue.Text = tostring(CFG.force) .. " u/s"
+end)
+
+powerPlus.MouseButton1Click:Connect(function()
+    CFG.force = math.min(FORCE_MAX, CFG.force + FORCE_STEP)
+    powerValue.Text = tostring(CFG.force) .. " u/s"
+end)
+
+refreshBtn.MouseButton1Click:Connect(function()
+    buildPlayerList()
+end)
+
+flyToggleBtn.MouseButton1Click:Connect(function()
+    toggleFlyCar()
+    if flyActive then
+        flyToggleBtn.Text = "■  DESACTIVAR FLY CAR"
+        flyToggleBtn.BackgroundColor3 = OFF_CLR
+    else
+        flyToggleBtn.Text = "🚗  ACTIVAR (auto o lo que mires)"
+        flyToggleBtn.BackgroundColor3 = FLY_CLR
+    end
+end)
+
+-- Auto-refresh cuando alguien entra o sale
+Players.PlayerAdded:Connect(function() task.wait(1); buildPlayerList() end)
+Players.PlayerRemoving:Connect(function(p)
+    if targetPlayer == p then targetPlayer = lp end
+    task.wait(0.5)
+    buildPlayerList()
+end)
+
+-- ════════════════════════════════════════════════════════════════════════
+-- REGISTRO DE PARADA — requerido por Tab:CreateScriptToggle()
+-- ════════════════════════════════════════════════════════════════════════
+_G["_YY_STOP_SuperRing"] = function()
+    active = false
+    stopRing()
+    stopFlyCar()
+    pcall(function() gui:Destroy() end)
+    _G["_YY_STOP_SuperRing"] = nil
+end
