@@ -745,6 +745,11 @@ local BTN_CLR   = Color3.fromRGB(52,  52,  60)
 local SEL_CLR   = Color3.fromRGB(35,  90,  55)
 local FLY_CLR   = Color3.fromRGB(45,  70,  140)
 
+--// Velocidad de vuelo del vehículo — rango del ajustador nuevo. No toca
+--// la física de startFlyCar(): ese Heartbeat ya lee FLYCFG.moveSpeed en
+--// vivo cada frame, así que mover estos botones alcanza para cambiarla.
+local MOVESPEED_MIN, MOVESPEED_MAX, MOVESPEED_STEP = 20, 300, 15
+
 local gui = Instance.new("ScreenGui")
 gui.Name           = "_SuperRing"
 gui.ResetOnSpawn   = false
@@ -766,9 +771,28 @@ local function corner(inst, radius)
     return c
 end
 
+--// ── Tamaño adaptable a pantalla ──────────────────────────────────────
+--// El panel se calcula como fracción del viewport, con topes mín/máx
+--// para que en un celular chico no se corte y en un monitor grande no
+--// quede gigante. Se recalcula si el jugador rota el celular (cambia
+--// ViewportSize).
+local camera = workspace.CurrentCamera
+
+local PANEL_W_MIN, PANEL_W_MAX, PANEL_W_RATIO = 210, 252, 0.60
+local PANEL_H_MIN, PANEL_H_MAX, PANEL_H_RATIO = 300, 460, 0.68
+
+local function computePanelSize()
+    local vp = (camera and camera.ViewportSize) or Vector2.new(800, 600)
+    local w = math.clamp(vp.X * PANEL_W_RATIO, PANEL_W_MIN, PANEL_W_MAX)
+    local h = math.clamp(vp.Y * PANEL_H_RATIO, PANEL_H_MIN, PANEL_H_MAX)
+    return w, h
+end
+
+local initW, initH = computePanelSize()
+
 -- ── Panel principal (glassy, igual que HideGuis) ─────────────────────────
 local panel = mk("Frame", {
-    Size = UDim2.fromOffset(224, 452),
+    Size = UDim2.fromOffset(initW, initH),
     Position = UDim2.new(0, 16, 0, 100),
     BackgroundColor3 = BG,
     BackgroundTransparency = 0.30,
@@ -827,9 +851,25 @@ TS:Create(
     { Transparency = 0.0 }
 ):Play()
 
+--// Recalcula tamaño y reacomoda el panel dentro de la pantalla si el
+--// jugador rota el celular o cambia de resolución.
+if camera then
+    camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+        local w2, h2 = computePanelSize()
+        panel.Size = UDim2.fromOffset(w2, h2)
+        local vp = camera.ViewportSize
+        local maxX = math.max(0, vp.X - w2)
+        local maxY = math.max(0, vp.Y - h2)
+        panel.Position = UDim2.new(
+            0, math.clamp(panel.Position.X.Offset, 0, maxX),
+            0, math.clamp(panel.Position.Y.Offset, 0, maxY)
+        )
+    end)
+end
+
 -- Header / zona de arrastre
 local header = mk("Frame", {
-    Size = UDim2.fromOffset(224, 36),
+    Size = UDim2.new(1, 0, 0, 36),
     BackgroundTransparency = 1,
     ZIndex = 3,
 }, panel)
@@ -844,9 +884,9 @@ mk("TextLabel", {
     ZIndex = 3,
 }, header)
 
--- Toggle Ring
+-- Toggle Ring (fijo arriba, no scrollea — siempre visible junto al header)
 local toggleBtn = mk("TextButton", {
-    Size = UDim2.fromOffset(204, 34),
+    Size = UDim2.new(1, -20, 0, 34),
     Position = UDim2.fromOffset(10, 40),
     BackgroundColor3 = ON_CLR,
     Text = "▶  START RING",
@@ -859,22 +899,57 @@ local toggleBtn = mk("TextButton", {
 }, panel)
 corner(toggleBtn, 8)
 
+--// ── Cuerpo deslizable ────────────────────────────────────────────────
+--// Todo lo demás (estilo, potencia, fly car, jugadores) vive acá adentro.
+--// El panel NUNCA cambia de tamaño por esto — el contenido que no entra
+--// simplemente se desliza con el dedo, como cualquier lista nativa.
+local body = mk("ScrollingFrame", {
+    Size = UDim2.new(1, -20, 1, -84),
+    Position = UDim2.fromOffset(10, 80),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = Color3.fromRGB(90, 90, 105),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+    ElasticBehavior = Enum.ElasticBehavior.WhenScrollable,
+    ZIndex = 3,
+}, panel)
+local bodyLayout = mk("UIListLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding = UDim.new(0, 8),
+}, body)
+
+local ord = 0
+local function nextOrd()
+    ord += 1
+    return ord
+end
+
 -- Style selector
 mk("TextLabel", {
-    Size = UDim2.fromOffset(204, 16),
-    Position = UDim2.fromOffset(10, 83),
+    Size = UDim2.new(1, 0, 0, 16),
     BackgroundTransparency = 1,
     Text = "ESTILO DE MOVIMIENTO",
     TextColor3 = TXT_DIM,
     Font = Enum.Font.GothamBold,
     TextSize = 9,
     TextXAlignment = Enum.TextXAlignment.Left,
+    LayoutOrder = nextOrd(),
     ZIndex = 3,
-}, panel)
+}, body)
+
+local styleRow = mk("Frame", {
+    Size = UDim2.new(1, 0, 0, 28),
+    BackgroundTransparency = 1,
+    LayoutOrder = nextOrd(),
+    ZIndex = 3,
+}, body)
 
 local prevBtn = mk("TextButton", {
     Size = UDim2.fromOffset(28, 28),
-    Position = UDim2.fromOffset(10, 99),
+    Position = UDim2.fromOffset(0, 0),
     BackgroundColor3 = BTN_CLR,
     Text = "◀",
     TextColor3 = TXT,
@@ -883,12 +958,12 @@ local prevBtn = mk("TextButton", {
     BorderSizePixel = 0,
     AutoButtonColor = false,
     ZIndex = 3,
-}, panel)
+}, styleRow)
 corner(prevBtn, 7)
 
 local styleLabel = mk("TextLabel", {
-    Size = UDim2.fromOffset(136, 28),
-    Position = UDim2.fromOffset(42, 99),
+    Size = UDim2.new(1, -64, 1, 0),
+    Position = UDim2.fromOffset(32, 0),
     BackgroundColor3 = SURFACE,
     Text = STYLES[1].name,
     TextColor3 = TXT,
@@ -897,12 +972,12 @@ local styleLabel = mk("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Center,
     BorderSizePixel = 0,
     ZIndex = 3,
-}, panel)
+}, styleRow)
 corner(styleLabel, 7)
 
 local nextBtn = mk("TextButton", {
     Size = UDim2.fromOffset(28, 28),
-    Position = UDim2.fromOffset(182, 99),
+    Position = UDim2.new(1, -28, 0, 0),
     BackgroundColor3 = BTN_CLR,
     Text = "▶",
     TextColor3 = TXT,
@@ -911,25 +986,32 @@ local nextBtn = mk("TextButton", {
     BorderSizePixel = 0,
     AutoButtonColor = false,
     ZIndex = 3,
-}, panel)
+}, styleRow)
 corner(nextBtn, 7)
 
 -- Power selector
 mk("TextLabel", {
-    Size = UDim2.fromOffset(204, 16),
-    Position = UDim2.fromOffset(10, 136),
+    Size = UDim2.new(1, 0, 0, 16),
     BackgroundTransparency = 1,
     Text = "POTENCIA",
     TextColor3 = TXT_DIM,
     Font = Enum.Font.GothamBold,
     TextSize = 9,
     TextXAlignment = Enum.TextXAlignment.Left,
+    LayoutOrder = nextOrd(),
     ZIndex = 3,
-}, panel)
+}, body)
+
+local powerRow = mk("Frame", {
+    Size = UDim2.new(1, 0, 0, 28),
+    BackgroundTransparency = 1,
+    LayoutOrder = nextOrd(),
+    ZIndex = 3,
+}, body)
 
 local powerMinus = mk("TextButton", {
     Size = UDim2.fromOffset(28, 28),
-    Position = UDim2.fromOffset(10, 152),
+    Position = UDim2.fromOffset(0, 0),
     BackgroundColor3 = BTN_CLR,
     Text = "−",
     TextColor3 = TXT,
@@ -938,12 +1020,12 @@ local powerMinus = mk("TextButton", {
     BorderSizePixel = 0,
     AutoButtonColor = false,
     ZIndex = 3,
-}, panel)
+}, powerRow)
 corner(powerMinus, 7)
 
 local powerValue = mk("TextLabel", {
-    Size = UDim2.fromOffset(136, 28),
-    Position = UDim2.fromOffset(42, 152),
+    Size = UDim2.new(1, -64, 1, 0),
+    Position = UDim2.fromOffset(32, 0),
     BackgroundColor3 = SURFACE,
     Text = tostring(CFG.force) .. " u/s",
     TextColor3 = TXT,
@@ -952,12 +1034,12 @@ local powerValue = mk("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Center,
     BorderSizePixel = 0,
     ZIndex = 3,
-}, panel)
+}, powerRow)
 corner(powerValue, 7)
 
 local powerPlus = mk("TextButton", {
     Size = UDim2.fromOffset(28, 28),
-    Position = UDim2.fromOffset(182, 152),
+    Position = UDim2.new(1, -28, 0, 0),
     BackgroundColor3 = BTN_CLR,
     Text = "+",
     TextColor3 = TXT,
@@ -966,35 +1048,34 @@ local powerPlus = mk("TextButton", {
     BorderSizePixel = 0,
     AutoButtonColor = false,
     ZIndex = 3,
-}, panel)
+}, powerRow)
 corner(powerPlus, 7)
 
 -- Separador
 mk("Frame", {
-    Size = UDim2.fromOffset(204, 1),
-    Position = UDim2.fromOffset(10, 189),
+    Size = UDim2.new(1, 0, 0, 1),
     BackgroundColor3 = Color3.fromRGB(255, 255, 255),
     BackgroundTransparency = 0.85,
     BorderSizePixel = 0,
+    LayoutOrder = nextOrd(),
     ZIndex = 3,
-}, panel)
+}, body)
 
 -- ── Fly Car ───────────────────────────────────────────────────────────────
 mk("TextLabel", {
-    Size = UDim2.fromOffset(204, 16),
-    Position = UDim2.fromOffset(10, 196),
+    Size = UDim2.new(1, 0, 0, 16),
     BackgroundTransparency = 1,
     Text = "FLY CAR",
     TextColor3 = TXT_DIM,
     Font = Enum.Font.GothamBold,
     TextSize = 9,
     TextXAlignment = Enum.TextXAlignment.Left,
+    LayoutOrder = nextOrd(),
     ZIndex = 3,
-}, panel)
+}, body)
 
 local flyToggleBtn = mk("TextButton", {
-    Size = UDim2.fromOffset(204, 30),
-    Position = UDim2.fromOffset(10, 212),
+    Size = UDim2.new(1, 0, 0, 30),
     BackgroundColor3 = FLY_CLR,
     Text = "🚗  ACTIVAR (auto o lo que mires)",
     TextColor3 = TXT,
@@ -1002,13 +1083,13 @@ local flyToggleBtn = mk("TextButton", {
     TextSize = 11,
     BorderSizePixel = 0,
     AutoButtonColor = false,
+    LayoutOrder = nextOrd(),
     ZIndex = 3,
-}, panel)
+}, body)
 corner(flyToggleBtn, 8)
 
 flyStatusLabel = mk("TextLabel", {
-    Size = UDim2.fromOffset(204, 14),
-    Position = UDim2.fromOffset(10, 244),
+    Size = UDim2.new(1, 0, 0, 14),
     BackgroundTransparency = 1,
     Text = "Sin objetivo",
     TextColor3 = TXT_DIM,
@@ -1016,14 +1097,86 @@ flyStatusLabel = mk("TextLabel", {
     TextSize = 10,
     TextXAlignment = Enum.TextXAlignment.Left,
     TextTruncate = Enum.TextTruncate.AtEnd,
+    LayoutOrder = nextOrd(),
     ZIndex = 3,
-}, panel)
+}, body)
+
+-- Velocidad de vuelo (NUEVO — ajustador para FLYCFG.moveSpeed)
+mk("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 16),
+    BackgroundTransparency = 1,
+    Text = "VELOCIDAD DE VUELO",
+    TextColor3 = TXT_DIM,
+    Font = Enum.Font.GothamBold,
+    TextSize = 9,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    LayoutOrder = nextOrd(),
+    ZIndex = 3,
+}, body)
+
+local moveSpeedRow = mk("Frame", {
+    Size = UDim2.new(1, 0, 0, 28),
+    BackgroundTransparency = 1,
+    LayoutOrder = nextOrd(),
+    ZIndex = 3,
+}, body)
+
+local moveSpeedMinus = mk("TextButton", {
+    Size = UDim2.fromOffset(28, 28),
+    Position = UDim2.fromOffset(0, 0),
+    BackgroundColor3 = BTN_CLR,
+    Text = "−",
+    TextColor3 = TXT,
+    Font = Enum.Font.GothamBold,
+    TextSize = 14,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    ZIndex = 3,
+}, moveSpeedRow)
+corner(moveSpeedMinus, 7)
+
+local moveSpeedValue = mk("TextLabel", {
+    Size = UDim2.new(1, -64, 1, 0),
+    Position = UDim2.fromOffset(32, 0),
+    BackgroundColor3 = SURFACE,
+    Text = tostring(FLYCFG.moveSpeed) .. " u/s",
+    TextColor3 = TXT,
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    TextXAlignment = Enum.TextXAlignment.Center,
+    BorderSizePixel = 0,
+    ZIndex = 3,
+}, moveSpeedRow)
+corner(moveSpeedValue, 7)
+
+local moveSpeedPlus = mk("TextButton", {
+    Size = UDim2.fromOffset(28, 28),
+    Position = UDim2.new(1, -28, 0, 0),
+    BackgroundColor3 = BTN_CLR,
+    Text = "+",
+    TextColor3 = TXT,
+    Font = Enum.Font.GothamBold,
+    TextSize = 14,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    ZIndex = 3,
+}, moveSpeedRow)
+corner(moveSpeedPlus, 7)
 
 -- Controles direccionales (mantener presionado — funciona con touch y mouse)
-local function flyDirBtn(text, xOff, yOff)
+-- Cruz (▲◀▼▶) a la izquierda ~68% del ancho, subir/bajar (⤒⤓) a la derecha.
+-- Posicionados por escala así se acomodan solos al ancho real del panel.
+local dpadRow = mk("Frame", {
+    Size = UDim2.new(1, 0, 0, 68),
+    BackgroundTransparency = 1,
+    LayoutOrder = nextOrd(),
+    ZIndex = 3,
+}, body)
+
+local function flyDirBtn(text, xScale, yOffset, wScale)
     local b = mk("TextButton", {
-        Size = UDim2.fromOffset(46, 30),
-        Position = UDim2.fromOffset(xOff, yOff),
+        Size = UDim2.new(wScale, -4, 0, 30),
+        Position = UDim2.new(xScale, 2, 0, yOffset),
         BackgroundColor3 = BTN_CLR,
         Text = text,
         TextColor3 = TXT,
@@ -1032,17 +1185,17 @@ local function flyDirBtn(text, xOff, yOff)
         BorderSizePixel = 0,
         AutoButtonColor = false,
         ZIndex = 3,
-    }, panel)
+    }, dpadRow)
     corner(b, 7)
     return b
 end
 
-local flyFwdBtn   = flyDirBtn("▲",  60, 262)
-local flyLeftBtn  = flyDirBtn("◀",  10, 296)
-local flyBackBtn  = flyDirBtn("▼",  60, 296)
-local flyRightBtn = flyDirBtn("▶", 110, 296)
-local flyUpBtn    = flyDirBtn("⤒", 158, 262)
-local flyDownBtn  = flyDirBtn("⤓", 158, 296)
+local flyFwdBtn   = flyDirBtn("▲", 0.24, 0,  0.20)
+local flyLeftBtn  = flyDirBtn("◀", 0.02, 34, 0.20)
+local flyBackBtn  = flyDirBtn("▼", 0.24, 34, 0.20)
+local flyRightBtn = flyDirBtn("▶", 0.46, 34, 0.20)
+local flyUpBtn    = flyDirBtn("⤒", 0.70, 0,  0.28)
+local flyDownBtn  = flyDirBtn("⤓", 0.70, 34, 0.28)
 
 local function bindHold(btn, key)
     btn.MouseButton1Down:Connect(function() flyKeys[key] = true end)
@@ -1074,30 +1227,29 @@ end)
 
 -- Separador
 mk("Frame", {
-    Size = UDim2.fromOffset(204, 1),
-    Position = UDim2.fromOffset(10, 334),
+    Size = UDim2.new(1, 0, 0, 1),
     BackgroundColor3 = Color3.fromRGB(255, 255, 255),
     BackgroundTransparency = 0.85,
     BorderSizePixel = 0,
+    LayoutOrder = nextOrd(),
     ZIndex = 3,
-}, panel)
+}, body)
 
 -- Player selector
 mk("TextLabel", {
-    Size = UDim2.fromOffset(204, 16),
-    Position = UDim2.fromOffset(10, 341),
+    Size = UDim2.new(1, 0, 0, 16),
     BackgroundTransparency = 1,
     Text = "ORBITAR A:",
     TextColor3 = TXT_DIM,
     Font = Enum.Font.GothamBold,
     TextSize = 9,
     TextXAlignment = Enum.TextXAlignment.Left,
+    LayoutOrder = nextOrd(),
     ZIndex = 3,
-}, panel)
+}, body)
 
 local plrScroll = mk("ScrollingFrame", {
-    Size = UDim2.fromOffset(204, 78),
-    Position = UDim2.fromOffset(10, 358),
+    Size = UDim2.new(1, 0, 0, 90),
     BackgroundColor3 = SURFACE,
     BackgroundTransparency = 0.15,
     BorderSizePixel = 0,
@@ -1105,8 +1257,10 @@ local plrScroll = mk("ScrollingFrame", {
     ScrollBarImageColor3 = Color3.fromRGB(70, 70, 85),
     AutomaticCanvasSize = Enum.AutomaticSize.Y,
     CanvasSize = UDim2.new(0, 0, 0, 0),
+    ElasticBehavior = Enum.ElasticBehavior.WhenScrollable,
+    LayoutOrder = nextOrd(),
     ZIndex = 3,
-}, panel)
+}, body)
 corner(plrScroll, 8)
 mk("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, plrScroll)
 
@@ -1165,8 +1319,7 @@ end
 buildPlayerList()
 
 local refreshBtn = mk("TextButton", {
-    Size = UDim2.fromOffset(204, 24),
-    Position = UDim2.fromOffset(10, 418),
+    Size = UDim2.new(1, 0, 0, 24),
     BackgroundColor3 = BTN_CLR,
     Text = "↻  Actualizar lista",
     TextColor3 = TXT_DIM,
@@ -1174,11 +1327,12 @@ local refreshBtn = mk("TextButton", {
     TextSize = 11,
     BorderSizePixel = 0,
     AutoButtonColor = false,
+    LayoutOrder = nextOrd(),
     ZIndex = 3,
-}, panel)
+}, body)
 corner(refreshBtn, 7)
 
--- ── Drag ─────────────────────────────────────────────────────────────────
+-- ── Drag (con límites de pantalla — no se puede arrastrar fuera) ────────
 local dragging    = false
 local moved       = false
 local dragOrigin  = Vector2.zero
@@ -1204,10 +1358,12 @@ UIS.InputChanged:Connect(function(inp)
             moved = true
         end
         if moved then
-            panel.Position = UDim2.new(
-                panelOrigin.X.Scale, panelOrigin.X.Offset + d.X,
-                panelOrigin.Y.Scale, panelOrigin.Y.Offset + d.Y
-            )
+            local vp = (camera and camera.ViewportSize) or Vector2.new(800, 600)
+            local maxX = math.max(0, vp.X - panel.AbsoluteSize.X)
+            local maxY = math.max(0, vp.Y - panel.AbsoluteSize.Y)
+            local newX = math.clamp(panelOrigin.X.Offset + d.X, 0, maxX)
+            local newY = math.clamp(panelOrigin.Y.Offset + d.Y, 0, maxY)
+            panel.Position = UDim2.new(0, newX, 0, newY)
         end
     end
 end)
@@ -1252,6 +1408,16 @@ end)
 powerPlus.MouseButton1Click:Connect(function()
     CFG.force = math.min(FORCE_MAX, CFG.force + FORCE_STEP)
     powerValue.Text = tostring(CFG.force) .. " u/s"
+end)
+
+moveSpeedMinus.MouseButton1Click:Connect(function()
+    FLYCFG.moveSpeed = math.max(MOVESPEED_MIN, FLYCFG.moveSpeed - MOVESPEED_STEP)
+    moveSpeedValue.Text = tostring(FLYCFG.moveSpeed) .. " u/s"
+end)
+
+moveSpeedPlus.MouseButton1Click:Connect(function()
+    FLYCFG.moveSpeed = math.min(MOVESPEED_MAX, FLYCFG.moveSpeed + MOVESPEED_STEP)
+    moveSpeedValue.Text = tostring(FLYCFG.moveSpeed) .. " u/s"
 end)
 
 refreshBtn.MouseButton1Click:Connect(function()
