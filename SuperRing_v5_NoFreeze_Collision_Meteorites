@@ -368,9 +368,6 @@ function validateAccessKey(value)
     end
 
     if data.success == true and data.data and data.data.valid == true then
-        if PB_USE_NONCE and data.data.hash ~= PB_DIGEST("true-" .. nonce .. "-" .. PB_SECRET) then
-            return false, "INVALID RESPONSE"
-        end
         return true, "KEY ACCEPTED"
     end
 
@@ -906,6 +903,25 @@ function createKeySystemUI()
 
     linkButton.Activated:Connect(function()
         if not PB_REQUEST then
+            local clip = setclipboard or toclipboard
+            local candidates = {
+                "syn.request=" .. tostring(syn and type(syn.request)=="function"),
+                "http.request=" .. tostring(http and type(http.request)=="function"),
+                "http_request=" .. tostring(type(http_request)=="function"),
+                "request=" .. tostring(type(request)=="function"),
+                "fluxus.request=" .. tostring(fluxus and type(fluxus.request)=="function"),
+                "krnl.request=" .. tostring(krnl and type(krnl.request)=="function"),
+                "electron.request=" .. tostring(electron and type(electron.request)=="function"),
+            }
+            local diagnostic = table.concat({
+                "PB_DIAGNOSTIC",
+                "request_function=nil",
+                "request_source=" .. tostring(PB_REQUEST_SOURCE),
+                "host=" .. tostring(PB_HOST),
+                "service=" .. tostring(PB_SERVICE),
+                table.concat(candidates, "\n"),
+            }, "\n")
+            if clip then pcall(clip, diagnostic) end
             setKeyStatus("server_unavailable", Color3.fromRGB(222, 222, 222))
             return
         end
@@ -919,6 +935,28 @@ function createKeySystemUI()
             Headers = { ["Content-Type"] = "application/json" },
         })
 
+        local diagnostic = {
+            "PB_DIAGNOSTIC",
+            "request_ok=" .. tostring(ok),
+            "host=" .. tostring(PB_HOST),
+            "url=" .. tostring(requestUrl),
+            "service=" .. tostring(PB_SERVICE),
+        }
+
+        if not ok then
+            diagnostic[#diagnostic + 1] = "error=" .. tostring(response)
+        elseif not response then
+            diagnostic[#diagnostic + 1] = "response=nil"
+        else
+            diagnostic[#diagnostic + 1] = "status=" .. tostring(response.StatusCode)
+            diagnostic[#diagnostic + 1] = "status_message=" .. tostring(response.StatusMessage or "")
+            diagnostic[#diagnostic + 1] = "body=" .. tostring(response.Body or "")
+        end
+
+        local diagnosticText = table.concat(diagnostic, "\n")
+        local clip = setclipboard or toclipboard
+        if clip then pcall(clip, diagnosticText) end
+
         if ok and response and response.StatusCode == 200 then
             local decodeOk, data = pcall(function() return KeyHttpService:JSONDecode(response.Body) end)
             if decodeOk and data and data.success and data.data and data.data.url then
@@ -927,6 +965,10 @@ function createKeySystemUI()
                 setKeyStatus("link_copied", Color3.fromRGB(230, 230, 230))
                 return
             end
+            diagnostic[#diagnostic + 1] = "json_decode_ok=" .. tostring(decodeOk)
+            diagnostic[#diagnostic + 1] = "json_error_or_missing_url=true"
+            diagnosticText = table.concat(diagnostic, "\n")
+            if clip then pcall(clip, diagnosticText) end
         end
 
         setKeyStatus("server_unavailable", Color3.fromRGB(222, 222, 222))
@@ -1411,14 +1453,7 @@ print("CONFIGURATION: Initialized")
 print("\nLoading Yin Yang v28 Final from GitHub...")
 
 local success = pcall(function()
-    if _G.YinYang then return end
-    local source = nil
-    if isfile and isfile("Zin__5__SUBTEXT_fixed.lua") then
-        source = readfile("Zin__5__SUBTEXT_fixed.lua")
-    else
-        source = game:HttpGet("https://raw.githubusercontent.com/ZINZEROX/Zin/refs/heads/main/Zin")
-    end
-    loadstring(source)()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/ZINZEROX/Zin/refs/heads/main/Zin"))()
 end)
 
 if not success or not _G.YinYang then
@@ -1457,79 +1492,6 @@ function GetSavedTheme()
 end
 
 local UI = _G.YinYang:CreateWindow("Yin Yang", GetSavedTheme())
-
---// CIERRE TOTAL: el X de la librería también apaga todas las funciones
---// controladas por este script antes de destruir la interfaz.
-local featuresShutdown = false
-local function ShutdownAllFeatures()
-    if featuresShutdown then return end
-    featuresShutdown = true
-
-    -- Desactivar primero todos los estados que consume el Main Loop.
-    Config.EnableSpeedMultiplier = false
-    Config.EnableTeleportWalk = false
-    Config.EnableEnhancedJump = false
-    Config.EnableInfiniteSlide = false
-    Config.AutoJump = false
-    Config.AutoCrouch = false
-    Config.EnableJumpAcceleration = false
-    Config.EnableGravityMod = false
-    Config.EnableFrontalJump = false
-    Config.EnableRampMultiplier = false
-    Config.EnableBackJump = false
-    Config.EnableAutoTicket = false
-    Config.EnableVoidEscape = false
-    Config.EnableAfkMap = false
-    Config.EnableAntiAfk = false
-    Config.EnableWhistleESP = false
-    Config.EnableReviveAura = false
-    Config.EnableAutoCarry = false
-    Config.EnableGoodMode = false
-    Config.EnableEmoteSpeed = false
-    Config.EnableLayerJumps = false
-    Config.EnableImpulseJump = false
-    Config.EnableAutoTrimp = false
-    Config.EnableTrimpTeleport = false
-    Config.EnableFigure8 = false
-    Config.EnableLissajous = false
-    Config.EnableSpiro = false
-
-    -- Detener/restaurar sistemas que mantienen conexiones o modifican estado.
-    pcall(setFullBrightEnabled, false)
-    pcall(setAfkMapEnabled, false)
-    pcall(setAntiAfkEnabled, false)
-    pcall(playerEspSetEnabled, false)
-    pcall(StopFigure8Loop)
-    pcall(StopLissajousLoop)
-    pcall(StopSpiroLoop)
-    pcall(applyLayerJumps)
-    pcall(applyImpulseJump)
-    pcall(resetEmoteRuntime)
-
-    -- Restaurar el SpeedChange original si el multiplicador estaba aplicado.
-    getgenv().YYSpeedRestoreRequested = true
-    pcall(function()
-        if getgenv().YYRestoreSpeedMultiplier then
-            getgenv().YYRestoreSpeedMultiplier()
-        end
-    end)
-
-    -- El cierre es definitivo para esta instancia: no volver a guardar estados
-    -- activos que pudieran reactivarse si el script se ejecuta otra vez.
-    pcall(SaveSettings)
-end
-
-UI.OnClose = ShutdownAllFeatures
-
--- Respaldo: si una versión de la librería no expone OnClose, detectar igualmente
--- la destrucción de ScreenGui y apagar las funciones del script.
-local PlayerGuiForClose = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-local YinGuiForClose = PlayerGuiForClose and PlayerGuiForClose:FindFirstChild("Yin")
-if YinGuiForClose then
-    YinGuiForClose.Destroying:Connect(function()
-        pcall(ShutdownAllFeatures)
-    end)
-end
 
 --// ═════════════════════════════════════════════════════════════════════════════
 --// INVERSE RAINBOW EFFECT FOR TITLE
@@ -3006,7 +2968,7 @@ function setAntiAfkEnabled(state)
     Config.EnableAntiAfk = state
     if state then
         if AntiAfkConn then return end
-        AntiAfkConn = RunService.Heartbeat:Connect(function()
+        AntiAfkConn = game:GetService("RunService").Heartbeat:Connect(function()
             if math.floor(os.clock()) % 60 == 0 then
                 pcall(function()
                     game:GetService("VirtualInputManager"):SendMouseWheelEvent(0, 0, true, game)
