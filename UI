@@ -32589,7 +32589,7 @@ REGLAS DE RESPUESTA:
 end)()
 
 
-local DEMO_ACTIVO = true
+local DEMO_ACTIVO = false
 
 if DEMO_ACTIVO then
     task.wait(0.5)
