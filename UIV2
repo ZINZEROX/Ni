@@ -1189,7 +1189,7 @@ function Hydra.floatButton(obj, o)
     end
     local saved = Config.floats[id]
     local pill = mk("TextButton", {Size = UDim2.fromOffset(0, 42), AutomaticSize = Enum.AutomaticSize.X, Position = (type(saved) == "table" and saved.x) and UDim2.fromOffset(saved.x, saved.y) or UDim2.new(0.5, -70, 0.18, 0),
-        BackgroundColor3 = Color3.fromRGB(10, 11, 15), BackgroundTransparency = 0.12, AutoButtonColor = false, Text = "", Parent = Gui})
+        BackgroundColor3 = Color3.fromRGB(10, 11, 15), BackgroundTransparency = 0.45, AutoButtonColor = false, Text = "", Parent = Gui})
     corner(pill, 999)
     -- fondo: una capa con un brillo plateado muy suave que gira lento (va debajo del contenido)
     local sheen = mk("Frame", {Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0, BorderSizePixel = 0, Parent = pill})
@@ -1222,7 +1222,7 @@ function Hydra.floatButton(obj, o)
         local on = obj:Get()
         fx.on = on
         local t = animate and 0.45 or 0
-        tween(pill, t, {BackgroundTransparency = on and 0.04 or 0.18})
+        tween(pill, t, {BackgroundTransparency = on and 0.38 or 0.5})
         bg.Transparency = NumberSequence.new({
             NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, on and 0.78 or 0.9), NumberSequenceKeypoint.new(1, 1),
         })
@@ -1453,33 +1453,10 @@ track(UserInputService.InputBegan:Connect(function(input, processed)
 end))
 
 function Hydra:Notify(text, color) toast(text, color) end
+-- traducciones de los textos de un script externo: {["texto en español"] = "english text"}
+function Hydra:AddTranslations(list)
+    for spanish, english in pairs(list) do EN[spanish] = english end
+end
 function Hydra:Select(name) selectTab(name) end
-
--- ==================== MOVIMIENTO (por ahora solo visual: las opciones todavía no hacen nada en el juego) ====================
-for spanish, english in pairs({
-    ["Movimiento"] = "Movement", ["MOVER"] = "MOVE", ["Salto"] = "Jump",
-    ["Salta solo y no pierde velocidad"] = "Jumps by itself without losing speed",
-    ["Aceleración"] = "Acceleration", ["Negativo = gana velocidad en el aire"] = "Negative = gains speed in the air",
-    ["Mantener salto"] = "Hold jump", ["Solo mientras mantenés saltar"] = "Only while you hold jump", ["Salto realista"] = "Realistic jump",
-    ["Auto salto"] = "Auto jump", ["Salta apenas tocás el piso"] = "Jumps as soon as you touch the ground", ["Espera"] = "Delay",
-    ["Multiplica tu velocidad al correr"] = "Multiplies your running speed", ["Multiplicador"] = "Multiplier",
-    ["Slide infinito"] = "Infinite slide", ["El deslizamiento no se frena"] = "The slide never slows down", ["Impulso"] = "Boost",
-    ["Campo de visión"] = "Field of view", ["FOV de la cámara"] = "Camera FOV",
-}) do EN[spanish] = english end
-
-local TabMove = Hydra:Tab({Id = "Move", Title = "Movimiento", Caption = "MOVER", Icon = "➤"})
-TabMove:Section("Salto", "➤")
-local DemoBhop = TabMove:Toggle({Id = "bhop", Title = "Bunny Hop", Desc = "Salta solo y no pierde velocidad", Icon = "➤", Keybind = true, Floating = true})
-DemoBhop:Slider({Id = "bhopAccel", Title = "Aceleración", Desc = "Negativo = gana velocidad en el aire", Min = -3, Max = 0, Step = 0.1, Default = -0.2})
-DemoBhop:Toggle({Id = "bhopHold", Title = "Mantener salto", Desc = "Solo mientras mantenés saltar"})
-DemoBhop:Toggle({Id = "bhopRealistic", Title = "Salto realista"})
-local DemoAutoJump = TabMove:Toggle({Id = "autoJump", Title = "Auto salto", Desc = "Salta apenas tocás el piso", Icon = "◎", Keybind = true, Floating = true})
-DemoAutoJump:Slider({Id = "autoJumpDelay", Title = "Espera", Min = 0, Max = 1, Step = 0.05, Default = 0, Suffix = " s"})
-TabMove:Section("Velocidad", "◷")
-local DemoSpeed = TabMove:Toggle({Id = "speed", Title = "Velocidad", Desc = "Multiplica tu velocidad al correr", Icon = "◷", Keybind = true, Floating = true})
-DemoSpeed:Slider({Id = "speedMult", Title = "Multiplicador", Min = 1, Max = 3, Step = 0.05, Default = 1.5, Suffix = "x"})
-local DemoSlide = TabMove:Toggle({Id = "infSlide", Title = "Slide infinito", Desc = "El deslizamiento no se frena", Icon = "✦", Keybind = true, Floating = true})
-DemoSlide:Slider({Id = "slideBoost", Title = "Impulso", Min = 1, Max = 20, Step = 1, Default = 5})
-TabMove:Slider({Id = "fov", Title = "Campo de visión", Desc = "FOV de la cámara", Min = 70, Max = 120, Step = 1, Default = 70})
 
 return Hydra
