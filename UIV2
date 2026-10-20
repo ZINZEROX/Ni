@@ -1682,41 +1682,47 @@ function Hydra.playerSearch(parent, order, o)
         tween(handle, 0.25, {BackgroundColor3 = C.Dim})
     end)
 
-    -- 2) vista previa (se abre al encontrar a alguien)
-    local OPEN = 132
-    local preview = mk("Frame", {Size = UDim2.new(1, 0, 0, 0), BackgroundColor3 = C.Bg, BackgroundTransparency = 0.45, BorderSizePixel = 0, ClipsDescendants = true,
+    -- 2) vista previa: un "escenario" con el avatar centrado sobre una base de luz, el nombre debajo
+    -- y una barra de estado fina abajo de todo (se abre al encontrar a alguien)
+    local OPEN = 214
+    local preview = mk("Frame", {Size = UDim2.new(1, 0, 0, 0), BackgroundColor3 = C.Bg, BackgroundTransparency = 0.4, BorderSizePixel = 0, ClipsDescendants = true,
         Visible = false, LayoutOrder = 2, Parent = card})
     corner(preview, 12)
     stroke(preview, C.Stroke, 0.6)
-    local photo = mk("Frame", {Size = UDim2.fromOffset(108, 108), Position = UDim2.fromOffset(12, 12), BackgroundColor3 = C.Field, BorderSizePixel = 0, Parent = preview})
-    corner(photo, 14)
-    mk("UIGradient", {Rotation = 90, Transparency = NumberSequence.new(0, 0.35), Parent = photo})
-    -- aro plateado que gira (lo mueve TweenService en bucle)
-    local ring = mk("UIStroke", {Color = Color3.new(1, 1, 1), Thickness = 2, Parent = photo})
-    local ringGrad = mk("UIGradient", {Rotation = 0, Color = ColorSequence.new({ColorSequenceKeypoint.new(0, C.AccentDark), ColorSequenceKeypoint.new(0.5, Color3.new(1, 1, 1)),
-        ColorSequenceKeypoint.new(1, C.AccentDark)}), Parent = ring})
-    TweenService:Create(ringGrad, TweenInfo.new(3, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), {Rotation = 360}):Play()
-    -- brillo de "cargando"
-    local shimmer = mk("Frame", {Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.9, BorderSizePixel = 0, ZIndex = 2, Parent = photo})
-    corner(shimmer, 14)
-    local shimmerGrad = mk("UIGradient", {Rotation = 20, Offset = Vector2.new(-1, 0), Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 1),
-        NumberSequenceKeypoint.new(0.5, 0.2), NumberSequenceKeypoint.new(1, 1)}), Parent = shimmer})
-    TweenService:Create(shimmerGrad, TweenInfo.new(1.1, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), {Offset = Vector2.new(1, 0)}):Play()
-    local body = mk("ImageLabel", {Size = UDim2.fromScale(1, 1), Position = UDim2.fromOffset(0, 0), BackgroundTransparency = 1, Image = "", ScaleType = Enum.ScaleType.Fit, ZIndex = 3, Parent = photo})
-    local bodyScale = mk("UIScale", {Scale = 1, Parent = body})
-    -- el avatar flota suave
-    TweenService:Create(body, TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {Position = UDim2.fromOffset(0, -3)}):Play()
-    local function text(size, font, color, y, h)
-        return mk("TextLabel", {Size = UDim2.new(1, -144, 0, h), Position = UDim2.fromOffset(132, y), BackgroundTransparency = 1, Text = "", TextColor3 = color, Font = font,
-            TextSize = size, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Parent = preview})
-    end
-    local displayLabel = text(16, Enum.Font.GothamBlack, C.Text, 18, 22)
-    local userLabel = text(12, Enum.Font.GothamSemibold, C.Dim, 40, 16)
-    local idLabel = text(10, Enum.Font.GothamSemibold, C.Dim, 58, 14)
-    local chip = mk("TextLabel", {Size = UDim2.fromOffset(0, 24), AutomaticSize = Enum.AutomaticSize.X, Position = UDim2.fromOffset(132, 86), BackgroundColor3 = C.Accent,
-        BorderSizePixel = 0, Text = "", TextColor3 = C.Bg, Font = Enum.Font.GothamBold, TextSize = 11, Parent = preview})
-    corner(chip, 999)
-    mk("UIPadding", {PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), Parent = chip})
+    -- luz desde arriba (degradado vertical)
+    local stage = mk("Frame", {Size = UDim2.new(1, 0, 0, 150), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0, BorderSizePixel = 0, Parent = preview})
+    mk("UIGradient", {Rotation = 90, Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.86), NumberSequenceKeypoint.new(0.7, 0.97), NumberSequenceKeypoint.new(1, 1)}), Parent = stage})
+    -- base de luz debajo de los pies (dos ovalos)
+    local glow = mk("Frame", {Size = UDim2.fromOffset(150, 20), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, 136), BackgroundColor3 = C.Accent,
+        BackgroundTransparency = 0.82, BorderSizePixel = 0, Parent = preview})
+    corner(glow, 999)
+    local base = mk("Frame", {Size = UDim2.fromOffset(96, 10), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, 136), BackgroundColor3 = C.Accent,
+        BackgroundTransparency = 0.45, BorderSizePixel = 0, Parent = preview})
+    corner(base, 999)
+    mk("UIGradient", {Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0), NumberSequenceKeypoint.new(1, 1)}), Parent = base})
+    -- el avatar
+    local body = mk("ImageLabel", {Size = UDim2.fromOffset(136, 136), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 2), BackgroundTransparency = 1, Image = "",
+        ImageTransparency = 1, ScaleType = Enum.ScaleType.Fit, ZIndex = 2, Parent = preview})
+    -- linea que escanea de arriba a abajo mientras busca
+    local scan = mk("Frame", {Size = UDim2.fromOffset(150, 2), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 8), BackgroundColor3 = C.Accent, BorderSizePixel = 0,
+        Visible = false, ZIndex = 3, Parent = preview})
+    mk("UIGradient", {Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0), NumberSequenceKeypoint.new(1, 1)}), Parent = scan})
+    TweenService:Create(scan, TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {Position = UDim2.new(0.5, 0, 0, 132)}):Play()
+    -- textos centrados
+    local displayLabel = mk("TextLabel", {Size = UDim2.new(1, -24, 0, 20), Position = UDim2.fromOffset(12, 150), BackgroundTransparency = 1, Text = "", TextColor3 = C.Text,
+        Font = Enum.Font.GothamBlack, TextSize = 16, TextTruncate = Enum.TextTruncate.AtEnd, Parent = preview})
+    local userLabel = mk("TextLabel", {Size = UDim2.new(1, -24, 0, 14), Position = UDim2.fromOffset(12, 171), BackgroundTransparency = 1, Text = "", TextColor3 = C.Dim,
+        Font = Enum.Font.GothamSemibold, TextSize = 11, TextTruncate = Enum.TextTruncate.AtEnd, Parent = preview})
+    -- estado: texto chico + barra fina
+    local statusLabel = mk("TextLabel", {Size = UDim2.new(1, -28, 0, 12), Position = UDim2.fromOffset(14, 189), BackgroundTransparency = 1, Text = "", TextColor3 = C.Dim,
+        Font = Enum.Font.GothamBold, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Parent = preview})
+    local track_ = mk("Frame", {Size = UDim2.new(1, -28, 0, 3), Position = UDim2.fromOffset(14, 204), BackgroundColor3 = C.Field, BorderSizePixel = 0, ClipsDescendants = true, Parent = preview})
+    corner(track_, 99)
+    local fill = mk("Frame", {Size = UDim2.fromScale(0, 1), BackgroundColor3 = C.Accent, BorderSizePixel = 0, Parent = track_})
+    corner(fill, 99)
+    local fillLoop = nil
+    -- la vieja variable "chip" la usa el resto: ahora es el texto de estado
+    local chip = statusLabel
 
     local function show(open)
         if open then
@@ -1724,7 +1730,7 @@ function Hydra.playerSearch(parent, order, o)
                 preview.Size = UDim2.new(1, 0, 0, 0)
                 preview.Visible = true
             end
-            tween(preview, 0.28, {Size = UDim2.new(1, 0, 0, OPEN)})
+            tween(preview, 0.3, {Size = UDim2.new(1, 0, 0, OPEN)})
         elseif preview.Visible then
             local t = tween(preview, 0.2, {Size = UDim2.new(1, 0, 0, 0)}, Enum.EasingStyle.Quad)
             t.Completed:Connect(function(state)
@@ -1732,43 +1738,56 @@ function Hydra.playerSearch(parent, order, o)
             end)
         end
     end
-    local KIND = {ok = C.Good, bad = C.Bad, busy = C.AccentSoft}
+    local KIND = {ok = C.Good, bad = C.Bad, busy = C.Accent}
     local function setChip(textValue, kind)
         local color = KIND[kind] or C.Accent
         chip.Text = tr(textValue)
-        chip.BackgroundColor3 = color
-        chip.TextColor3 = (kind == "busy") and C.Text or C.Bg
+        chip.TextColor3 = (kind == "ok" or kind == "bad") and color or C.Dim
+        if fillLoop then fillLoop:Cancel() fillLoop = nil end
+        fill.BackgroundColor3 = color
+        if kind == "busy" then
+            -- barra que corre de un lado al otro (esperando)
+            fill.Size = UDim2.fromScale(0.3, 1)
+            fill.Position = UDim2.fromScale(-0.3, 0)
+            fillLoop = TweenService:Create(fill, TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1), {Position = UDim2.fromScale(1, 0)})
+            fillLoop:Play()
+        else
+            fill.Position = UDim2.fromScale(0, 0)
+            fill.Size = UDim2.fromScale(0, 1)
+            tween(fill, 0.45, {Size = UDim2.fromScale(1, 1)})
+        end
+        tween(base, 0.3, {BackgroundColor3 = color})
+        tween(glow, 0.3, {BackgroundColor3 = color})
         tween(cardStroke, 0.25, {Color = (kind == "ok" or kind == "bad") and color or C.Stroke, Transparency = (kind == "ok" or kind == "bad") and 0.35 or 0.5})
     end
     local function setLoading(name)
-        shimmer.Visible = true
-        body.Image = ""
+        scan.Visible = true
+        tween(body, 0.2, {ImageTransparency = 0.75})
         displayLabel.TextColor3 = C.Text
         displayLabel.Text = name
         userLabel.Text = tr("Buscando\226\128\166")
-        idLabel.Text = ""
-        setChip("\194\183\194\183\194\183", "busy")
+        setChip("Buscando\226\128\166", "busy")
         show(true)
     end
     local function setFound(info)
-        shimmer.Visible = false
+        scan.Visible = false
         body.Image = "rbxthumb://type=Avatar&id=" .. tostring(info.id) .. "&w=420&h=420"
-        bodyScale.Scale = 0.85
-        tween(bodyScale, 0.35, {Scale = 1}, Enum.EasingStyle.Back)
+        -- entra subiendo desde la base
+        body.ImageTransparency = 1
+        body.Position = UDim2.new(0.5, 0, 0, 14)
+        tween(body, 0.45, {ImageTransparency = 0, Position = UDim2.new(0.5, 0, 0, 2)})
         displayLabel.TextColor3 = C.Text
         displayLabel.Text = info.display or info.user
-        userLabel.Text = "@" .. info.user
-        idLabel.Text = "ID " .. tostring(info.id)
+        userLabel.Text = "@" .. info.user .. "  \194\183  ID " .. tostring(info.id)
         setChip("\226\156\147 Listo para aplicar")
         show(true)
     end
     local function setMissing(name)
-        shimmer.Visible = false
-        body.Image = ""
+        scan.Visible = false
+        tween(body, 0.2, {ImageTransparency = 1})
         displayLabel.Text = name
         displayLabel.TextColor3 = C.Bad
         userLabel.Text = tr("No existe ese usuario")
-        idLabel.Text = ""
         setChip("\226\156\149 Revis\195\161 el nombre", "bad")
         show(true)
     end
