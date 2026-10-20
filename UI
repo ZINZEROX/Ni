@@ -1193,6 +1193,18 @@ track(Gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
         if pill.Parent then Hydra.placeOnScreen(pill, pill.Position.X.Offset, pill.Position.Y.Offset) end
     end
 end))
+-- candado del boton flotante: con el candado puesto queda fijo en su lugar (se guarda con la posicion)
+function Hydra.isFloatLocked(id)
+    local saved = Config.floats[id]
+    return type(saved) == "table" and saved.locked == true
+end
+function Hydra.setFloatLocked(id, locked)
+    local pill = Hydra.Floats[id]
+    if not pill then return false end
+    Config.floats[id] = {x = pill.AbsolutePosition.X, y = pill.AbsolutePosition.Y, locked = locked and true or nil}
+    saveConfig()
+    return true
+end
 function Hydra.floatButton(obj, o)
     local id = obj.Id
     if Hydra.Floats[id] then
@@ -1264,15 +1276,18 @@ function Hydra.floatButton(obj, o)
         if dragStart and (inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch) then
             local delta = inp.Position - dragStart
             if delta.Magnitude > 6 then moved = true end
-            if moved then Hydra.placeOnScreen(pill, startPos.X.Offset + delta.X, startPos.Y.Offset + delta.Y) end
+            -- con el candado puesto no se mueve (tocarlo sigue prendiendo/apagando)
+            if moved and not Hydra.isFloatLocked(id) then Hydra.placeOnScreen(pill, startPos.X.Offset + delta.X, startPos.Y.Offset + delta.Y) end
         end
     end))
     track(UserInputService.InputEnded:Connect(function(inp)
         if dragStart and (inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch) then
             dragStart = nil
             if moved then
-                Config.floats[id] = {x = pill.AbsolutePosition.X, y = pill.AbsolutePosition.Y}
-                saveConfig()
+                if not Hydra.isFloatLocked(id) then
+                    Config.floats[id] = {x = pill.AbsolutePosition.X, y = pill.AbsolutePosition.Y}
+                    saveConfig()
+                end
             else
                 obj:Set(not obj:Get())
             end
@@ -1357,10 +1372,36 @@ function Hydra.toggle(parent, order, o, nested)
         local corner2 = mk("Frame", {Size = UDim2.fromOffset(6, 6), Position = UDim2.new(1, -3, 0, -3), BackgroundColor3 = C.Dim, BorderSizePixel = 0, Parent = frameIcon})
         corner(corner2, 2)
         floatButton = {button = b, stroke = fiStroke, dot = corner2}
+        -- candado (dibujado): arco arriba + cuerpo; abierto = el arco sube y se corre
+        local lockB = mini(3, 26)
+        local shackle = mk("Frame", {Size = UDim2.fromOffset(8, 8), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, -4), BackgroundTransparency = 1, Parent = lockB})
+        corner(shackle, 99)
+        local shackleStroke = mk("UIStroke", {Color = C.Dim, Thickness = 1.6, Parent = shackle})
+        local lockBody = mk("Frame", {Size = UDim2.fromOffset(12, 9), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 3), BackgroundColor3 = C.Dim, BorderSizePixel = 0, ZIndex = 2, Parent = lockB})
+        corner(lockBody, 3)
+        local keyhole = mk("Frame", {Size = UDim2.fromOffset(2, 3), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), BackgroundColor3 = C.Bg, BorderSizePixel = 0, ZIndex = 3, Parent = lockBody})
+        corner(keyhole, 99)
+        local function paintLock(animate)
+            local floating = Hydra.Floats[id] ~= nil
+            local locked = floating and Hydra.isFloatLocked(id)
+            lockB.Visible = floating
+            local t = animate and 0.2 or 0
+            tween(shackleStroke, t, {Color = locked and C.Accent or C.Dim})
+            tween(lockBody, t, {BackgroundColor3 = locked and C.Accent or C.Dim})
+            tween(shackle, t, {Position = locked and UDim2.new(0.5, 0, 0.5, -4) or UDim2.new(0.5, 3, 0.5, -6)})
+        end
+        floatButton.paintLock = paintLock
+        lockB.MouseButton1Click:Connect(function()
+            if not Hydra.Floats[id] then return end
+            Hydra.setFloatLocked(id, not Hydra.isFloatLocked(id))
+            paintLock(true)
+        end)
+        paintLock(false)
         b.MouseButton1Click:Connect(function()
             local on = Hydra.floatButton(obj, o)
             tween(fiStroke, 0.2, {Color = on and C.Accent or C.Dim})
             tween(corner2, 0.2, {BackgroundColor3 = on and C.Accent or C.Dim})
+            paintLock(true)
         end)
     end
     -- desplegable de sub-opciones
@@ -1446,6 +1487,7 @@ function Hydra.toggle(parent, order, o, nested)
                 floatButton.stroke.Color = C.Accent
                 floatButton.dot.BackgroundColor3 = C.Accent
             end
+            floatButton.paintLock(false)
         end)
     end
     return obj
